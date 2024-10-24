@@ -1,0 +1,116 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include "secrect.h"  // Include your secret.h file
+
+#define LDR_PIN 34    // ADC pin where the LDR is connected
+#define LED_PIN 5     // GPIO pin connected to the LED
+
+int threshold = 2000;  // Set a threshold for low light detection
+
+WiFiClientSecure net;  // Create a WiFiClientSecure object
+PubSubClient client(net); // Create a PubSubClient object using the secure WiFi client
+
+// Define MQTT topics
+#define AWS_IOT_PUBLISH_TOPIC   "your/light/status"   // Topic for publishing LDR status
+#define AWS_IOT_SUBSCRIBE_TOPIC "your/control/topic"   // Topic for subscribing to control messages
+
+void setup() {
+  Serial.begin(115200);       // Start serial communication for debugging
+  pinMode(LED_PIN, OUTPUT);   // Set LED pin as OUTPUT
+  pinMode(LDR_PIN, INPUT);    // Set LDR pin as INPUT
+
+  // Connect to WiFi
+  Serial.print("Connecting to WiFi");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+    Serial.print(".");
+  }
+  Serial.println(" Connected!");
+
+  // Configure the secure connection for MQTT
+  net.setCACert(AWS_CERT_CA);
+  net.setCertificate(AWS_CERT_CRT);
+  net.setPrivateKey(AWS_CERT_PRIVATE);
+
+  // Set up MQTT
+  client.setServer(AWS_IOT_ENDPOINT, 8883);
+  client.setCallback(messageHandler);  // Set the callback function for incoming messages
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect(THINGNAME)) {
+      Serial.println("connected");
+      client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);  // Subscribe to control topic
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  // Read the LDR value (0-4095 for 12-bit ADC on ESP32)
+  int ldrValue = analogRead(LDR_PIN);
+  Serial.print("LDR Value: ");
+  Serial.println(ldrValue);   // Print the LDR value to the serial monitor
+
+  // Prepare the JSON document
+  StaticJsonDocument<200> doc;
+
+  // Check if the LDR value is below the threshold (low light condition)
+  if (ldrValue < threshold) {
+    digitalWrite(LED_PIN, HIGH);  // Turn ON LED (indicates low light)
+    Serial.println("street light is ON");
+    
+    // Prepare and publish low light status as JSON
+    doc["status"] = "Street light is working fine"; // Updated message for LED ON
+    doc["ldrValue"] = ldrValue;
+    char jsonBuffer[512];
+    serializeJson(doc, jsonBuffer);
+    client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+  } else {
+    digitalWrite(LED_PIN, LOW);   // Turn OFF LED (indicates sufficient light)
+    Serial.println("street light is OFF");
+    
+    // Prepare and publish sufficient light status as JSON
+    doc["status"] = "Default: Detected in street light.....!!!"; // Updated message for LED OFF
+    doc["ldrValue"] = ldrValue;
+    char jsonBuffer[512];
+    serializeJson(doc, jsonBuffer);
+    client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+  }
+
+  delay(500);  // Small delay to avoid flooding the serial monitor
+}
+
+// Callback function to handle incoming messages
+void messageHandler(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Incoming message on topic: ");
+  Serial.println(topic);
+  
+  // Handle incoming messages here (e.g., turn on/off the LED based on commands)
+  payload[length] = '\0';  // Null-terminate the payload to make it a string
+  String message = String((char*)payload);
+  Serial.println("Message: " + message);
+  
+  // Example: Turn LED ON if message is "ON", and OFF if "OFF"
+  if (message == "ON") {
+    digitalWrite(LED_PIN, HIGH);  // Turn ON LED
+  } else if (message == "OFF") {
+    digitalWrite(LED_PIN, LOW);  // Turn OFF LED
+  }
+}
